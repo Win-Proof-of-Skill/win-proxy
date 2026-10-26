@@ -16,7 +16,7 @@
 //! - `respond_with_internal_error`: Sends a 500 Internal Server Error response to the client.
 //! - `respond_with_timeout`: Sends a 504 Gateway Timeout response to the client.
 use crate::{
-    collector, config, liberdus, notifier, observer_gateway, shardus_monitor, subscription, Stats,
+    collector, config, notifier, observer_gateway, shardus_monitor, subscription, win, Stats,
 };
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -31,7 +31,7 @@ fn get_timestamp() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    
+
     // Format as human-readable timestamp (you can adjust format as needed)
     format!("{}", now)
 }
@@ -134,7 +134,7 @@ where
 /// Outer loop to handle multiple HTTP requests from the same stream
 pub async fn handle_stream<StreamLike>(
     mut client_stream: StreamLike,
-    liberdus: Arc<liberdus::Liberdus>,
+    win: Arc<win::WinCoin>,
     subscription_manager: Arc<subscription::Manager>,
     config: Arc<config::Config>,
     client_addr: String,
@@ -142,8 +142,12 @@ pub async fn handle_stream<StreamLike>(
 where
     StreamLike: AsyncWrite + AsyncRead + Unpin + Send,
 {
-    println!("[{}] [HTTP_CONNECT] IP: {} | New connection established", get_timestamp(), client_addr);
-    
+    println!(
+        "[{}] [HTTP_CONNECT] IP: {} | New connection established",
+        get_timestamp(),
+        client_addr
+    );
+
     loop {
         let mut req_buf = Vec::new();
         match timeout(
@@ -158,35 +162,58 @@ where
                     // Client closed connection cleanly
                     break;
                 }
-                
+
                 // Log that we received data
-                println!("[{}] [HTTP_DATA] IP: {} | Received {} bytes", get_timestamp(), client_addr, req_buf.len());
-                
+                println!(
+                    "[{}] [HTTP_DATA] IP: {} | Received {} bytes",
+                    get_timestamp(),
+                    client_addr,
+                    req_buf.len()
+                );
+
                 // Log warning for unusually large requests
                 if req_buf.len() > 100_000 {
-                    eprintln!("[{}] [HTTP_WARNING] IP: {} | Large request received: {} bytes", get_timestamp(), client_addr, req_buf.len());
+                    eprintln!(
+                        "[{}] [HTTP_WARNING] IP: {} | Large request received: {} bytes",
+                        get_timestamp(),
+                        client_addr,
+                        req_buf.len()
+                    );
                 }
-                
+
                 let method_route = match get_route(&req_buf) {
                     Some(route_info) => route_info,
                     None => {
-                        eprintln!("[{}] [HTTP_ERROR] IP: {} | Failed to extract route from request", get_timestamp(), client_addr);
+                        eprintln!(
+                            "[{}] [HTTP_ERROR] IP: {} | Failed to extract route from request",
+                            get_timestamp(),
+                            client_addr
+                        );
                         // Log the first 200 bytes of the request for debugging
                         if let Ok(req_str) = std::str::from_utf8(&req_buf) {
-                            let preview = if req_str.len() > 200 { &req_str[..200] } else { req_str };
-                            eprintln!("[{}] [HTTP_DEBUG] IP: {} | Request preview: {:?}", get_timestamp(), client_addr, preview);
+                            let preview = if req_str.len() > 200 {
+                                &req_str[..200]
+                            } else {
+                                req_str
+                            };
+                            eprintln!(
+                                "[{}] [HTTP_DEBUG] IP: {} | Request preview: {:?}",
+                                get_timestamp(),
+                                client_addr,
+                                preview
+                            );
                         }
                         break;
                     }
                 };
-                
+
                 let (method, route) = method_route;
-                
+
                 // Extract client information for logging
                 let user_agent = extract_user_agent(&req_buf);
                 let client_ip = extract_client_ip(&req_buf, &client_addr);
                 let (platform, app_version, device_id) = extract_client_info(&req_buf);
-                
+
                 // Log successful request
                 println!(
                     "[{}] [REQUEST] IP: {} | Route: {} {} | UA: {} | Platform: {} | AppVer: {} | DeviceID: {}",
@@ -236,10 +263,10 @@ where
                         }
                     }
                     Application::Validator => {
-                        if let Err(e) = liberdus::handle_request(
+                        if let Err(e) = win::handle_request(
                             req_buf,
                             &mut client_stream,
-                            liberdus.clone(),
+                            win.clone(),
                             config.clone(),
                         )
                         .await
@@ -270,11 +297,13 @@ where
             }
             Ok(Err(e)) => {
                 let error_details = match e.kind() {
-                    std::io::ErrorKind::UnexpectedEof => "Unexpected EOF - client disconnected abruptly",
+                    std::io::ErrorKind::UnexpectedEof => {
+                        "Unexpected EOF - client disconnected abruptly"
+                    }
                     std::io::ErrorKind::ConnectionReset => "Connection reset by peer",
                     std::io::ErrorKind::ConnectionAborted => "Connection aborted",
                     std::io::ErrorKind::TimedOut => "Read operation timed out",
-                    _ => "Unknown IO error"
+                    _ => "Unknown IO error",
                 };
                 eprintln!(
                     "[{}] [STREAM_ERROR] IP: {} | Error attempting to read bytes out of client stream: {} (Kind: {:?}, Details: {})",
@@ -292,8 +321,12 @@ where
         }
     }
 
-    println!("[{}] [HTTP_DISCONNECT] IP: {} | Connection closed", get_timestamp(), client_addr);
-    
+    println!(
+        "[{}] [HTTP_DISCONNECT] IP: {} | Connection closed",
+        get_timestamp(),
+        client_addr
+    );
+
     match client_stream.shutdown().await {
         Ok(_) => Ok(()),
         Err(_e) => Ok(()),
@@ -487,7 +520,7 @@ pub fn extract_client_info(buffer: &[u8]) -> (String, String, String) {
     let mut platform = "Unknown".to_string();
     let mut app_version = "Unknown".to_string();
     let mut device_id = "Unknown".to_string();
-    
+
     if let Ok(buffer_str) = std::str::from_utf8(buffer) {
         for line in buffer_str.lines() {
             let line_lower = line.to_lowercase();
@@ -500,11 +533,11 @@ pub fn extract_client_info(buffer: &[u8]) -> (String, String, String) {
             }
         }
     }
-    
+
     (platform, app_version, device_id)
 }
 pub async fn listen(
-    liberdus: Arc<liberdus::Liberdus>,
+    win: Arc<win::WinCoin>,
     subscription_manager: Arc<subscription::Manager>,
     config: Arc<config::Config>,
     server_stats: Arc<Stats>,
@@ -538,7 +571,7 @@ pub async fn listen(
             }
         };
 
-        let liberdus = Arc::clone(&liberdus);
+        let win = Arc::clone(&win);
         let subscription_manager = Arc::clone(&subscription_manager);
         let config = Arc::clone(&config);
         let stats = Arc::clone(&server_stats);
@@ -558,8 +591,14 @@ pub async fn listen(
                     Ok(tls_stream) => {
                         let tls_stream = tokio_rustls::TlsStream::Server(tls_stream);
                         let client_addr = format!("{}", socket_addr);
-                        let e =
-                            handle_stream(tls_stream, liberdus, subscription_manager, config, client_addr).await;
+                        let e = handle_stream(
+                            tls_stream,
+                            win,
+                            subscription_manager,
+                            config,
+                            client_addr,
+                        )
+                        .await;
                         if let Err(e) = e {
                             eprintln!("Handle Stream Error: {}", e);
                         }
@@ -574,7 +613,9 @@ pub async fn listen(
                 },
                 None => {
                     let client_addr = format!("{}", socket_addr);
-                    let e = handle_stream(raw_stream, liberdus, subscription_manager, config, client_addr).await;
+                    let e =
+                        handle_stream(raw_stream, win, subscription_manager, config, client_addr)
+                            .await;
                     if let Err(e) = e {
                         eprintln!("Handle Stream Error: {}", e);
                     }
@@ -677,13 +718,13 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use tokio::sync::RwLock;
 
-    fn test_liberdus() -> Arc<liberdus::Liberdus> {
+    fn test_win() -> Arc<win::WinCoin> {
         let cfg = config::Config::load().expect("config should load");
         let sc = Arc::new(crate::crypto::ShardusCrypto::new(&cfg.crypto_seed));
         let archivers = Arc::new(ArcSwap::from_pointee(
             Vec::<crate::archivers::Archiver>::new(),
         ));
-        Arc::new(liberdus::Liberdus::new(sc, archivers, cfg))
+        Arc::new(win::WinCoin::new(sc, archivers, cfg))
     }
 
     #[test]
@@ -899,12 +940,10 @@ mod tests {
     #[tokio::test]
     async fn handle_stream_serves_debug_subscriptions() {
         let config = Arc::new(config::Config::load().expect("config should load"));
-        let liberdus = test_liberdus();
+        let win = test_win();
         let sock_map: SocketIdents = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        let subscription_manager = Arc::new(subscription::Manager::new(
-            sock_map.clone(),
-            liberdus.clone(),
-        ));
+        let subscription_manager =
+            Arc::new(subscription::Manager::new(sock_map.clone(), win.clone()));
         subscription_manager
             .insert_subscription_for_test(&"socket-1".to_string(), "acct", 1)
             .await;
@@ -915,7 +954,7 @@ mod tests {
 
         let handler = handle_stream(
             server_side,
-            liberdus,
+            win,
             subscription_manager.clone(),
             config,
             "127.0.0.1:0".to_string(),

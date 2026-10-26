@@ -1,5 +1,8 @@
 [package]
-name = "liberdus-proxy"
+name = "win-proxy"
+description = "HTTP and WebSocket gateway for Win Proof of Skill (WIN)"
+repository = "https://github.com/Win-Proof-of-Skill/win-proxy"
+rust-version = "1.86"
 version = "0.1.0"
 edition = "2021"
 

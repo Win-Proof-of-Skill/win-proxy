@@ -1,4 +1,4 @@
-use crate::{config, liberdus, Stats};
+use crate::{config, win, Stats};
 use crate::{rpc, subscription};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,7 +16,7 @@ fn get_timestamp() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    
+
     // Format as human-readable timestamp (you can adjust format as needed)
     format!("{}", now)
 }
@@ -75,7 +75,7 @@ fn generate_uuid() -> String {
 }
 
 pub async fn listen(
-    _liberdus: Arc<liberdus::Liberdus>,
+    _win: Arc<win::WinCoin>,
     subscription_manager: Arc<subscription::Manager>,
     sock_map: Arc<RwLock<HashMap<SocketId, UnboundedSender<rpc::RpcResponse>>>>,
     config: Arc<config::Config>,
@@ -145,7 +145,9 @@ pub async fn listen(
                     Ok(tls_stream) => {
                         let tls_stream = tokio_rustls::TlsStream::Server(tls_stream);
                         let client_addr = format!("{}", socket_addr);
-                        let e = handle_stream(tls_stream, sock_map, subscription_manager, client_addr).await;
+                        let e =
+                            handle_stream(tls_stream, sock_map, subscription_manager, client_addr)
+                                .await;
                         if let Err(e) = e {
                             eprintln!("Handle Stream Error: {:?}", e);
                         }
@@ -160,7 +162,8 @@ pub async fn listen(
                 },
                 None => {
                     let client_addr = format!("{}", socket_addr);
-                    let e = handle_stream(raw_stream, sock_map, subscription_manager, client_addr).await;
+                    let e = handle_stream(raw_stream, sock_map, subscription_manager, client_addr)
+                        .await;
                     if let Err(e) = e {
                         eprintln!("Handle Stream Error: {}", e);
                     }
@@ -185,9 +188,14 @@ where
 {
     let socket_id = generate_uuid();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<rpc::RpcResponse>();
-    
-    println!("[{}] [WS_CONNECT] IP: {} | Socket ID: {}", get_timestamp(), client_addr, socket_id);
-    
+
+    println!(
+        "[{}] [WS_CONNECT] IP: {} | Socket ID: {}",
+        get_timestamp(),
+        client_addr,
+        socket_id
+    );
+
     let ws_stream = match tokio_tungstenite::accept_async(stream).await {
         Ok(ws_stream) => {
             {
@@ -241,7 +249,13 @@ where
                         let parsed: WebsocketIncoming = match serde_json::from_str(&msg) {
                             Ok(p) => p,
                             Err(e) => {
-                                eprintln!("[{}] [WS_ERROR] IP: {} | Socket ID: {} | Invalid JSON: {}", get_timestamp(), client_addr_1, socket_id_1, e);
+                                eprintln!(
+                                    "[{}] [WS_ERROR] IP: {} | Socket ID: {} | Invalid JSON: {}",
+                                    get_timestamp(),
+                                    client_addr_1,
+                                    socket_id_1,
+                                    e
+                                );
                                 let resp = rpc::generate_error_response(
                                     None,
                                     format!("Invalid JSON: {}", e),
@@ -280,7 +294,12 @@ where
                         }
                     }
                     Message::Pong(_) => {
-                        println!("[{}] [WS_PONG] IP: {} | Socket ID: {}", get_timestamp(), client_addr_1, socket_id_1);
+                        println!(
+                            "[{}] [WS_PONG] IP: {} | Socket ID: {}",
+                            get_timestamp(),
+                            client_addr_1,
+                            socket_id_1
+                        );
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .unwrap()
@@ -292,7 +311,13 @@ where
                     }
                 },
                 Err(e) => {
-                    eprintln!("[{}] [WS_ERROR] IP: {} | Socket ID: {} | WebSocket error: {}", get_timestamp(), client_addr_1, socket_id_1, e);
+                    eprintln!(
+                        "[{}] [WS_ERROR] IP: {} | Socket ID: {} | WebSocket error: {}",
+                        get_timestamp(),
+                        client_addr_1,
+                        socket_id_1,
+                        e
+                    );
                     if e.to_string().contains("Connection reset by peer") {
                         println!("[{}] [WS_DISCONNECT] IP: {} | Socket ID: {} | Connection reset by peer", get_timestamp(), client_addr_1, socket_id_1);
                         break;
@@ -371,11 +396,11 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::protocol::Message;
 
-    fn test_liberdus() -> Arc<liberdus::Liberdus> {
+    fn test_win() -> Arc<win::WinCoin> {
         let cfg = config::Config::load().expect("config should load");
         let sc = Arc::new(crypto::ShardusCrypto::new(&cfg.crypto_seed));
         let archivers = Arc::new(ArcSwap::from_pointee(Vec::<archivers::Archiver>::new()));
-        Arc::new(liberdus::Liberdus::new(sc, archivers, cfg))
+        Arc::new(win::WinCoin::new(sc, archivers, cfg))
     }
 
     #[test]
@@ -391,9 +416,9 @@ mod tests {
 
     #[tokio::test]
     async fn handle_stream_processes_invalid_json_and_closes() {
-        let liberdus = test_liberdus();
+        let win = test_win();
         let sock_map: SocketIdents = Arc::new(RwLock::new(HashMap::new()));
-        let subscription_manager = Arc::new(subscription::Manager::new(sock_map.clone(), liberdus));
+        let subscription_manager = Arc::new(subscription::Manager::new(sock_map.clone(), win));
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -408,8 +433,8 @@ mod tests {
                 subscription_manager_server,
                 addr.to_string(),
             )
-                .await
-                .unwrap();
+            .await
+            .unwrap();
         });
 
         let url = format!("ws://{}", addr);
@@ -430,9 +455,9 @@ mod tests {
 
     #[tokio::test]
     async fn handle_stream_sends_ping_and_tracks_pong() {
-        let liberdus = test_liberdus();
+        let win = test_win();
         let sock_map: SocketIdents = Arc::new(RwLock::new(HashMap::new()));
-        let subscription_manager = Arc::new(subscription::Manager::new(sock_map.clone(), liberdus));
+        let subscription_manager = Arc::new(subscription::Manager::new(sock_map.clone(), win));
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -447,8 +472,8 @@ mod tests {
                 subscription_manager_server,
                 addr.to_string(),
             )
-                .await
-                .unwrap();
+            .await
+            .unwrap();
         });
 
         let url = format!("ws://{}", addr);

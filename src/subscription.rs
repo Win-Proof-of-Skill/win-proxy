@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::ws;
-use crate::{liberdus, rpc};
+use crate::{rpc, win};
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -41,7 +41,7 @@ type Timestamp = u128;
 
 pub struct Manager {
     states: Arc<RwLock<Inner>>,
-    liberdus: Arc<liberdus::Liberdus>,
+    win: Arc<win::WinCoin>,
     socket_map: ws::SocketIdents,
 }
 
@@ -53,7 +53,7 @@ struct Inner {
 }
 
 impl Manager {
-    pub fn new(sock_map: ws::SocketIdents, liberdus: Arc<liberdus::Liberdus>) -> Self {
+    pub fn new(sock_map: ws::SocketIdents, win: Arc<win::WinCoin>) -> Self {
         Manager {
             states: Arc::new(RwLock::new(Inner {
                 accounts_by_sock: HashMap::new(),
@@ -61,13 +61,13 @@ impl Manager {
                 last_received: HashMap::new(),
             })),
             socket_map: sock_map,
-            liberdus,
+            win,
         }
     }
 
     async fn set_states(&self, addr: UserAccountAddress, socket_id: &ws::SocketId) {
-        let account_current_timestamp = match self.liberdus.get_account_by_address(&addr).await {
-            Ok(r) => match serde_json::from_value::<liberdus::UserAccount>(r) {
+        let account_current_timestamp = match self.win.get_account_by_address(&addr).await {
+            Ok(r) => match serde_json::from_value::<win::UserAccount>(r) {
                 Ok(a) => a.data.chat_timestamp,
                 _ => 0,
             },
@@ -384,7 +384,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::config;
     use crate::crypto::ShardusCrypto;
-    use crate::liberdus;
+    use crate::win;
 
     use arc_swap::ArcSwap;
     use std::collections::HashMap;
@@ -439,12 +439,12 @@ pub(crate) mod tests {
         let crypto = Arc::new(ShardusCrypto::new(
             "64f152869ca2d473e4ba64ab53f49ccdb2edae22da192c126850970e788af347",
         ));
-        let liberdus = Arc::new(crate::liberdus::Liberdus::new(
+        let win = Arc::new(crate::win::WinCoin::new(
             crypto,
             Arc::new(ArcSwap::from_pointee(Vec::new())),
             sample_config(),
         ));
-        Manager::new(Arc::new(tokio::sync::RwLock::new(HashMap::new())), liberdus)
+        Manager::new(Arc::new(tokio::sync::RwLock::new(HashMap::new())), win)
     }
 
     #[tokio::test]
@@ -494,9 +494,9 @@ pub(crate) mod tests {
         let config = config::Config::default();
         let crypto = Arc::new(ShardusCrypto::new(&config.crypto_seed));
         let archivers = Arc::new(ArcSwap::from_pointee(Vec::new()));
-        let liberdus = Arc::new(liberdus::Liberdus::new(crypto, archivers, config));
+        let win = Arc::new(win::WinCoin::new(crypto, archivers, config));
 
-        Manager::new(Arc::new(tokio::sync::RwLock::new(HashMap::new())), liberdus)
+        Manager::new(Arc::new(tokio::sync::RwLock::new(HashMap::new())), win)
     }
 
     #[tokio::test]

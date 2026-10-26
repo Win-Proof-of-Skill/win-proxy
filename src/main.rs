@@ -1,49 +1,12 @@
-//! # Liberdus proxy server
-//! This is a simple proxy server that forwards requests to the Liberdus consensus node (validators). The service does nothing special except picking the appropriate node to forward the request to. Aim to minimize clients having to track the nodes themselves.
-//!
-//! For additional features like real time chat room subscription, data distribution protocol integration and muc more consistent API, please use liberdus-rpc.
-//!
-//! The underlying algorithem that pick a node based on biased random selection is identical to the one used in liberdus-rpc.
-//!
-//! # Have Cargo setup on your system
-//! ```bash
-//! curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-//! ```
-//! # Clone the repository
-//! ```bash
-//! git clone [link]
-//! ```
-//! Provide seed archiver in `./src/seed_archiver.json`.
-//!
-//! # Standalone network
-//! This is for cases where you have the entire network running on a remote machine that's different than the proxy server, such that archiver will a list of validator with loop back ips since they're on same machine. But the list will break the proxy due to loopback ips. In this case, you can use the standalone network mode.
-//!
-//! Configure it in `src/config.json`
-//! ```json
-//! {
-//!     "standalone_network": {
-//!         "enabled": true,
-//!         "replacement_ip": "[ip of the machine that house the network you want to connect]"
-//!     }
-//! }
-//! ```
-//!
-//! Configure the seed archiver in `./src/seed_archiver.json` to have the same ip and credentials.
-//!
-//! Note that standalone network may never be used in production.
-//!
-//! # Run the server
-//! ```bash
-//! cargo run
-//! ```
+//! WIN proxy: HTTP on the configured port and WebSocket on the next port.
+//! See the repository README for local WIN network and deployment setup.
 use std::collections::HashMap;
-use std::fs;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_rustls::TlsAcceptor;
 
-use liberdus_proxy::*;
+use win_proxy::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -73,12 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         false => None,
     };
 
-    let archiver_seed_data = fs::read_to_string(&_configs.archiver_seed_path)
-        .map_err(|err| format!("Failed to read archiver seed file: {}", err))
-        .unwrap();
-
-    let archiver_seed: Vec<archivers::Archiver> =
-        serde_json::from_str(&archiver_seed_data).unwrap();
+    let archiver_seed = _configs.load_archiver_seed()?;
 
     let crypto = Arc::new(crypto::ShardusCrypto::new(&_configs.crypto_seed));
 
@@ -88,18 +46,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _configs.clone(),
     ));
 
-    let lbd = Arc::new(liberdus::Liberdus::new(
+    let network = Arc::new(win::WinCoin::new(
         crypto.clone(),
         arch_utils.get_active_archivers(),
         _configs.clone(),
     ));
 
     let _archivers = Arc::clone(&arch_utils);
-    let _liberdus = Arc::clone(&lbd);
+    let _win = Arc::clone(&network);
 
     // first time archiver and nodelist queries
     Arc::clone(&_archivers).discover().await;
-    _liberdus.update_active_nodelist().await;
+    _win.update_active_nodelist().await;
 
     {
         // schedule a background task that refresh nodelist
@@ -111,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             loop {
                 ticker.tick().await;
-                _liberdus.update_active_nodelist().await;
+                _win.update_active_nodelist().await;
             }
         });
 
@@ -131,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Waiting for active nodelist...");
     loop {
-        if lbd.active_nodelist.load().len() > 0 {
+        if network.active_nodelist.load().len() > 0 {
             break;
         }
         // Prevent busy-wait CPU spinning
@@ -161,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let liberdus_http = Arc::clone(&lbd);
+    let win_http = Arc::clone(&network);
     let config_http = Arc::clone(&config);
     let server_stats_http = Arc::clone(&server_stats);
     let tls_http = tls_acceptor.clone();
@@ -172,13 +130,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sock_map = Arc::new(RwLock::new(HashMap::new()));
     let subscription_manager = Arc::new(subscription::Manager::new(
         sock_map.clone(),
-        liberdus_http.clone(),
+        win_http.clone(),
     ));
 
     let manager_for_http = Arc::clone(&subscription_manager);
     let http_listener_task = tokio::spawn(async move {
         http::listen(
-            liberdus_http,
+            win_http,
             manager_for_http,
             config_http,
             server_stats_http,
@@ -190,11 +148,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws_config = Arc::clone(&config);
     let ws_server_stats = Arc::clone(&server_stats);
     let ws_tls = tls_acceptor.clone();
-    let ws_liberdus = Arc::clone(&lbd);
+    let ws_win = Arc::clone(&network);
 
     let websocket_listener_task = tokio::spawn(async move {
         ws::listen(
-            ws_liberdus,
+            ws_win,
             subscription_manager,
             sock_map,
             ws_config,

@@ -21,18 +21,18 @@ jobs:
     - name: Check formatting
       run: cargo fmt --all -- --check
     - name: Build (Debug)
-      run: cargo build --verbose
+      run: cargo build --locked --verbose
     - name: Build (Release)
-      run: cargo build --release --verbose
+      run: cargo build --locked --release --verbose
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --locked --verbose
     - name: Run Clippy
-      run: cargo clippy 
+      run: cargo clippy --locked --all-targets
     - name: Generate docs
-      run: cargo doc --no-deps
+      run: cargo doc --locked --no-deps
 
     - name: Redirect
-      run: echo '<!DOCTYPE HTML><html lang="en-US"><head><meta charset="UTF-8"><meta http-equiv="refresh" content="0; url=https://liberdus.com/liberdus-proxy/liberdus_proxy"><script type="text/javascript">window.location.href = "https://liberdus.com/liberdus-proxy/liberdus_proxy"</script><title>Page Redirection</title></head><body>If you are not redirected automatically, follow this <a href="https://liberdus.com/liberdus-proxy/liberdus_proxy">link to example</a>.</body></html>' > ./target/doc/index.html
+      run: echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="refresh" content="0; url=win_proxy/index.html"><title>WIN Proxy Documentation</title></head><body><a href="win_proxy/index.html">WIN Proxy Documentation</a></body></html>' > ./target/doc/index.html
 
 
     - name: Deploy to gh-pages
@@ -41,4 +41,3 @@ jobs:
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_dir: ./target/doc/
-

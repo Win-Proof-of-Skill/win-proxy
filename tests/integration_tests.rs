@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use liberdus_proxy::{collector, config};
+use win_proxy::{collector, config};
 
 fn test_config(port: u16) -> Arc<config::Config> {
     Arc::new(config::Config {

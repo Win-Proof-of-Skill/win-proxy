@@ -1,11 +1,11 @@
 use arc_swap::ArcSwap;
-use liberdus_proxy::{archivers, config, crypto, liberdus};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use win_proxy::{archivers, config, crypto, win};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_nodelist_consistency_lockstep() {
@@ -39,7 +39,7 @@ async fn test_nodelist_consistency_lockstep() {
 
                     // Generate deterministic node list based on version
                     let mut nodes = Vec::new();
-                    nodes.push(liberdus::Consensor {
+                    nodes.push(win::Consensor {
                         foundationNode: Some(false),
                         id: format!("version_{}", ver),
                         ip: format!("127.0.0.{}", ver % 255),
@@ -63,7 +63,7 @@ async fn test_nodelist_consistency_lockstep() {
         }
     });
 
-    // 2. Setup Liberdus
+    // 2. Setup WinCoin
     let archiver = archivers::Archiver {
         ip: "127.0.0.1".into(),
         port,
@@ -115,7 +115,7 @@ async fn test_nodelist_consistency_lockstep() {
     config.max_http_timeout_ms = 500;
     config.nodelist_refresh_interval_sec = 1;
 
-    let liberdus = Arc::new(liberdus::Liberdus::new(crypto.clone(), archivers, config));
+    let win = Arc::new(win::WinCoin::new(crypto.clone(), archivers, config));
 
     // 3. Lock-step Test Loop
     let num_readers = 10;
@@ -125,13 +125,13 @@ async fn test_nodelist_consistency_lockstep() {
         // A. Set Archiver Version
         current_version.store(i, Ordering::SeqCst);
 
-        // B. Update Liberdus (this awaits until the list is fetched and stored)
-        liberdus.update_active_nodelist().await;
+        // B. Update WinCoin (this awaits until the list is fetched and stored)
+        win.update_active_nodelist().await;
 
         // C. Spawn 10 Readers to Verify
         let mut handles = Vec::new();
         for _r in 0..num_readers {
-            let lib_ref = liberdus.clone();
+            let lib_ref = win.clone();
             let expected_version = i;
 
             let h = tokio::spawn(async move {
@@ -170,8 +170,8 @@ fn signed_node_list_with_keys(
     crypto: &crypto::ShardusCrypto,
     pk: &sodiumoxide::crypto::sign::PublicKey,
     sk: &sodiumoxide::crypto::sign::SecretKey,
-    nodes: Vec<liberdus::Consensor>,
-) -> liberdus::SignedNodeListResp {
+    nodes: Vec<win::Consensor>,
+) -> win::SignedNodeListResp {
     let unsigned_msg = serde_json::json!({
         "nodeList": nodes.clone(),
     });
@@ -184,9 +184,9 @@ fn signed_node_list_with_keys(
         .map(|b| format!("{:02x}", b))
         .collect::<String>();
 
-    liberdus::SignedNodeListResp {
+    win::SignedNodeListResp {
         nodeList: nodes,
-        sign: liberdus::Signature {
+        sign: win::Signature {
             owner: sodiumoxide::hex::encode(pk.as_ref()),
             sig: sig_bytes,
         },

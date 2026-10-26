@@ -1,5 +1,5 @@
-//! Configuration for the rpc server.
-use std::fs;
+//! Configuration for the WIN proxy server.
+use std::{fs, path::Path};
 
 #[derive(Debug, serde::Deserialize, Clone)]
 pub struct Config {
@@ -100,17 +100,95 @@ pub struct NotifierConfig {
     pub port: u16,
 }
 
-/// Load the configuration from the config json file
-/// path is src/config.json
 impl Config {
+    /// Select a deployment without modifying the checked-in configuration.
     pub fn load() -> Result<Self, String> {
-        let config_file = "src/config.json".to_string();
+        let path = std::env::var_os("WIN_PROXY_CONFIG").unwrap_or_else(|| "src/config.json".into());
+        Self::load_from(Path::new(&path))
+    }
 
-        let config_data = fs::read_to_string(&config_file)
-            .map_err(|err| format!("Failed to read config file: {}", err))?;
+    /// File paths are relative to this config file, or may be absolute.
+    pub fn load_from(path: impl AsRef<Path>) -> Result<Self, String> {
+        let path = path.as_ref();
+        let config_data = fs::read_to_string(path)
+            .map_err(|err| format!("Failed to read config {}: {}", path.display(), err))?;
+        let mut config: Self = serde_json::from_str(&config_data)
+            .map_err(|err| format!("Failed to parse config {}: {}", path.display(), err))?;
+        config.validate()?;
+        let directory = path.parent().unwrap_or_else(|| Path::new("."));
+        for value in [
+            &mut config.archiver_seed_path,
+            &mut config.tls.cert_path,
+            &mut config.tls.key_path,
+        ] {
+            if !value.is_empty() && Path::new(value).is_relative() {
+                *value = directory.join(&*value).to_string_lossy().into_owned();
+            }
+        }
+        Ok(config)
+    }
 
-        serde_json::from_str(&config_data)
-            .map_err(|err| format!("Failed to parse config file: {}", err))
+    fn validate(&self) -> Result<(), String> {
+        if self.http_port == 0 || self.http_port == u16::MAX {
+            return Err(
+                "http_port must be between 1 and 65534 (WebSocket uses the next port)".into(),
+            );
+        }
+        if self.nodelist_refresh_interval_sec == 0
+            || self.nodelist_refresh_interval_sec > u64::MAX / 2
+        {
+            return Err(
+                "nodelist_refresh_interval_sec must be positive and fit doubled in u64".into(),
+            );
+        }
+        if self.max_http_timeout_ms == 0
+            || self.max_http_timeout_ms > (u64::MAX / 2) as u128
+            || self.tcp_keepalive_time_sec == 0
+        {
+            return Err("Request and keep-alive timeouts must be positive and fit in u64".into());
+        }
+        if self.crypto_seed.len() != 64 || !self.crypto_seed.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(
+                "crypto_seed must be the WIN archiver's 64-character hexadecimal hash key".into(),
+            );
+        }
+        if self.archiver_seed_path.trim().is_empty() {
+            return Err("archiver_seed_path must identify the WIN archiver seed file".into());
+        }
+        if self.standalone_network.enabled
+            && self.standalone_network.replacement_ip.trim().is_empty()
+        {
+            return Err("standalone_network.replacement_ip is required when enabled".into());
+        }
+        if self.tls.enabled && (self.tls.cert_path.is_empty() || self.tls.key_path.is_empty()) {
+            return Err("TLS requires cert_path and key_path".into());
+        }
+        Ok(())
+    }
+
+    pub fn load_archiver_seed(&self) -> Result<Vec<crate::archivers::Archiver>, String> {
+        let data = fs::read_to_string(&self.archiver_seed_path).map_err(|err| {
+            format!(
+                "Failed to read WIN archiver seeds {}: {}",
+                self.archiver_seed_path, err
+            )
+        })?;
+        let seeds: Vec<crate::archivers::Archiver> = serde_json::from_str(&data)
+            .map_err(|err| format!("Failed to parse WIN archiver seeds: {}", err))?;
+        if seeds.is_empty() {
+            return Err("No WIN archiver seeds configured. Add your WIN archiver's IP, port and publicKey to archiver_seed_path.".into());
+        }
+        for seed in &seeds {
+            if seed.ip.trim().is_empty()
+                || seed.port == 0
+                || seed.publicKey.len() != 64
+                || !seed.publicKey.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err("Each WIN archiver seed requires an IP/hostname, a nonzero port and a 64-character hexadecimal publicKey".into());
+            }
+        }
+        Ok(seeds)
     }
 }
 
@@ -126,10 +204,69 @@ mod tests {
 
     #[test]
     fn load_reads_default_config() {
-        let cfg = Config::load().expect("config should parse");
+        let cfg = Config::load_from("src/config.json").expect("config should parse");
         assert_eq!(cfg.http_port, 3030);
         assert!(cfg.debug);
         assert!(!cfg.tls.enabled);
         assert_eq!(cfg.node_filtering.remove_top_nodes, 3);
+        assert!(!cfg.standalone_network.enabled);
+        let seeds = cfg.load_archiver_seed().unwrap();
+        assert_eq!(seeds[0].ip, "127.0.0.1");
+        assert_eq!(seeds[0].port, 4000);
+    }
+
+    #[test]
+    fn custom_config_resolves_paths_beside_the_file() {
+        let directory =
+            std::env::temp_dir().join(format!("win-proxy-config-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let mut data: serde_json::Value =
+            serde_json::from_str(include_str!("config.json")).unwrap();
+        data["archiver_seed_path"] = "seed.json".into();
+        data["tls"]["cert_path"] = "certs/win.crt".into();
+        let path = directory.join("custom.json");
+        fs::write(&path, data.to_string()).unwrap();
+        fs::write(
+            directory.join("seed.json"),
+            include_str!("archiver_seed.json"),
+        )
+        .unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(
+            Path::new(&cfg.tls.cert_path),
+            directory.join("certs/win.crt")
+        );
+        assert_eq!(cfg.load_archiver_seed().unwrap().len(), 1);
+
+        fs::write(directory.join("seed.json"), "[]").unwrap();
+        assert!(cfg
+            .load_archiver_seed()
+            .err()
+            .unwrap()
+            .contains("No WIN archiver"));
+        fs::write(
+            directory.join("seed.json"),
+            r#"[{"ip":"127.0.0.1","port":4000,"publicKey":"invalid"}]"#,
+        )
+        .unwrap();
+        assert!(cfg.load_archiver_seed().is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_config_that_cannot_start() {
+        let base: serde_json::Value = serde_json::from_str(include_str!("config.json")).unwrap();
+        for (field, value) in [
+            ("http_port", serde_json::json!(65535)),
+            ("http_port", serde_json::json!(0)),
+            ("crypto_seed", serde_json::json!("not-a-hash-key")),
+            ("nodelist_refresh_interval_sec", serde_json::json!(0)),
+            ("max_http_timeout_ms", serde_json::json!(0)),
+        ] {
+            let mut data = base.clone();
+            data[field] = value;
+            let config: Config = serde_json::from_value(data).unwrap();
+            assert!(config.validate().is_err(), "{} should be rejected", field);
+        }
     }
 }

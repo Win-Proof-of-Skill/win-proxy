@@ -46,7 +46,7 @@ pub struct Signature {
     pub sig: String,
 }
 
-pub struct Liberdus {
+pub struct WinCoin {
     pub active_nodelist: Arc<ArcSwap<Vec<Consensor>>>,
     trip_ms: Arc<RwLock<HashMap<String, u128>>>,
     archivers: Arc<ArcSwap<Vec<archivers::Archiver>>>,
@@ -57,13 +57,13 @@ pub struct Liberdus {
     config: Arc<config::Config>,
 }
 
-impl Liberdus {
+impl WinCoin {
     pub fn new(
         sc: Arc<crypto::ShardusCrypto>,
         archivers: Arc<ArcSwap<Vec<archivers::Archiver>>>,
         config: config::Config,
     ) -> Self {
-        Liberdus {
+        WinCoin {
             config: Arc::new(config),
             round_robin_index: Arc::new(AtomicUsize::new(0)),
             trip_ms: Arc::new(RwLock::new(HashMap::new())),
@@ -701,7 +701,7 @@ mod tests {
         };
 
         let archivers = Arc::new(ArcSwap::from_pointee(vec![_mock_archiver]));
-        let liberdus = Liberdus::new(
+        let win = WinCoin::new(
             Arc::new(crypto::ShardusCrypto::new(
                 "69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc",
             )),
@@ -721,29 +721,24 @@ mod tests {
             nodes.push(node);
         }
 
-        liberdus.active_nodelist.store(Arc::new(nodes));
+        win.active_nodelist.store(Arc::new(nodes));
 
-        liberdus
-            .round_robin_index
+        win.round_robin_index
             .store(1999, std::sync::atomic::Ordering::Relaxed);
 
         for i in 0..500 {
             //this artificially sets the round trip time for each node
             // specifically making lower indices have lower round trip time
-            liberdus.set_consensor_trip_ms(
-                i.to_string(),
-                (i * 10).min(liberdus.config.max_http_timeout_ms),
-            );
+            win.set_consensor_trip_ms(i.to_string(), (i * 10).min(win.config.max_http_timeout_ms));
         }
 
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-        liberdus.prepare_list().await;
+        win.prepare_list().await;
 
         println!(
             "Cumulative weight {}",
-            liberdus
-                .load_distribution_commulative_bias
+            win.load_distribution_commulative_bias
                 .read()
                 .await
                 .last()
@@ -751,7 +746,7 @@ mod tests {
         );
 
         for _i in 0..3000 {
-            let (index, _) = liberdus.get_random_consensor_biased().await.unwrap();
+            let (index, _) = win.get_random_consensor_biased().await.unwrap();
             println!("{}", index);
             assert_eq!(true, true);
         }
@@ -800,11 +795,11 @@ mod tests {
         }
     }
 
-    fn sample_liberdus() -> Liberdus {
+    fn sample_win() -> WinCoin {
         let crypto = Arc::new(crypto::ShardusCrypto::new(
             "64f152869ca2d473e4ba64ab53f49ccdb2edae22da192c126850970e788af347",
         ));
-        Liberdus::new(
+        WinCoin::new(
             crypto,
             Arc::new(ArcSwap::from_pointee(Vec::new())),
             sample_config(),
@@ -813,7 +808,7 @@ mod tests {
 
     #[test]
     fn calculate_bias_maps_timeouts() {
-        let l = sample_liberdus();
+        let l = sample_win();
         assert!((l.calculate_bias(0, 1000) - 1.0).abs() < f64::EPSILON);
         assert!(l.calculate_bias(1000, 1000) < 0.01);
         assert_eq!(l.calculate_bias(10, 1), 1.0);
@@ -821,8 +816,8 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_list_sorts_nodes_by_rtt() {
-        let liberdus = sample_liberdus();
-        let mut nodes = liberdus.active_nodelist.load_full().as_ref().clone();
+        let win = sample_win();
+        let mut nodes = win.active_nodelist.load_full().as_ref().clone();
         nodes.push(Consensor {
             foundationNode: Some(false),
             id: "slow".into(),
@@ -839,29 +834,23 @@ mod tests {
             publicKey: "pk2".into(),
             rng_bias: None,
         });
-        liberdus.active_nodelist.store(Arc::new(nodes));
+        win.active_nodelist.store(Arc::new(nodes));
 
         {
-            let mut trips = liberdus.trip_ms.write().await;
+            let mut trips = win.trip_ms.write().await;
             trips.insert("slow".into(), 900);
             trips.insert("fast".into(), 10);
         }
 
-        liberdus.prepare_list().await;
+        win.prepare_list().await;
 
-        let ordered = liberdus.active_nodelist.load_full();
+        let ordered = win.active_nodelist.load_full();
         assert_eq!(ordered[0].id, "fast");
         assert!(ordered[0].rng_bias.unwrap() > ordered[1].rng_bias.unwrap());
 
-        let dist = liberdus
-            .load_distribution_commulative_bias
-            .read()
-            .await
-            .clone();
+        let dist = win.load_distribution_commulative_bias.read().await.clone();
         assert_eq!(dist.len(), 2);
-        assert!(liberdus
-            .list_prepared
-            .load(std::sync::atomic::Ordering::Relaxed));
+        assert!(win.list_prepared.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     async fn start_http_server(response: String) -> (tokio::task::JoinHandle<()>, u16) {
@@ -975,17 +964,17 @@ mod tests {
         cfg.node_filtering.remove_bottom_nodes = 1;
         cfg.node_filtering.min_nodes_for_filtering = 2;
 
-        let liberdus = Liberdus::new(crypto, archivers, cfg);
-        liberdus.update_active_nodelist().await;
+        let win = WinCoin::new(crypto, archivers, cfg);
+        win.update_active_nodelist().await;
 
         bad_server.abort();
         good_server.abort();
 
-        let list = liberdus.active_nodelist.load_full();
+        let list = win.active_nodelist.load_full();
         assert_eq!(list.len(), 2);
         assert!(list.iter().all(|n| n.ip == "192.0.2.1"));
         assert!(list.iter().all(|n| n.id == "node1" || n.id == "node2"));
-        assert!(liberdus
+        assert!(win
             .load_distribution_commulative_bias
             .read()
             .await
@@ -1010,12 +999,12 @@ mod tests {
 
         let valid = signed_node_list_with_keys(&crypto, &pk, &sk, nodes.clone());
 
-        let liberdus = sample_liberdus();
-        assert!(liberdus.verify_signature(&valid));
+        let win = sample_win();
+        assert!(win.verify_signature(&valid));
 
         let mut invalid = valid.clone();
         invalid.sign.sig = "00".into();
-        assert!(!liberdus.verify_signature(&invalid));
+        assert!(!win.verify_signature(&invalid));
     }
 
     #[tokio::test]
@@ -1035,13 +1024,13 @@ mod tests {
         cfg.local_source.collector_api_ip = "127.0.0.1".into();
         cfg.local_source.collector_api_port = collector_port;
 
-        let liberdus = Liberdus::new(
+        let win = WinCoin::new(
             Arc::new(crypto::ShardusCrypto::new(&cfg.crypto_seed)),
             Arc::new(ArcSwap::from_pointee(Vec::new())),
             cfg.clone(),
         );
 
-        let value = liberdus
+        let value = win
             .get_account_by_address("0xabc")
             .await
             .expect("collector account");
@@ -1066,13 +1055,13 @@ mod tests {
         cfg.local_source.collector_api_ip = "127.0.0.1".into();
         cfg.local_source.collector_api_port = failing.1;
 
-        let liberdus = Liberdus::new(
+        let win = WinCoin::new(
             Arc::new(crypto::ShardusCrypto::new(&cfg.crypto_seed)),
             Arc::new(ArcSwap::from_pointee(Vec::new())),
             cfg,
         );
 
-        let mut nodes = liberdus.active_nodelist.load_full().as_ref().clone();
+        let mut nodes = win.active_nodelist.load_full().as_ref().clone();
         nodes.push(Consensor {
             foundationNode: Some(false),
             id: "n1".into(),
@@ -1081,17 +1070,15 @@ mod tests {
             publicKey: String::new(),
             rng_bias: Some(1.0),
         });
-        liberdus.active_nodelist.store(Arc::new(nodes));
-        liberdus
-            .load_distribution_commulative_bias
+        win.active_nodelist.store(Arc::new(nodes));
+        win.load_distribution_commulative_bias
             .write()
             .await
             .push(1.0);
-        liberdus
-            .list_prepared
+        win.list_prepared
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
-        let fallback = liberdus
+        let fallback = win
             .get_account_by_address("0xabc")
             .await
             .expect("fallback account");
@@ -1115,8 +1102,8 @@ mod tests {
         ))
         .await;
 
-        let liberdus = sample_liberdus();
-        let mut nodes = liberdus.active_nodelist.load_full().as_ref().clone();
+        let win = sample_win();
+        let mut nodes = win.active_nodelist.load_full().as_ref().clone();
         nodes.push(Consensor {
             foundationNode: Some(false),
             id: "fast".into(),
@@ -1125,20 +1112,18 @@ mod tests {
             publicKey: String::new(),
             rng_bias: Some(1.0),
         });
-        liberdus.active_nodelist.store(Arc::new(nodes));
-        liberdus
-            .load_distribution_commulative_bias
+        win.active_nodelist.store(Arc::new(nodes));
+        win.load_distribution_commulative_bias
             .write()
             .await
             .push(1.0);
-        liberdus
-            .list_prepared
+        win.list_prepared
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
         let request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec();
         let (mut client, mut peer) = tokio::io::duplex(1024);
 
-        handle_request(request, &mut client, Arc::new(liberdus), Arc::new(cfg))
+        handle_request(request, &mut client, Arc::new(win), Arc::new(cfg))
             .await
             .expect("request should succeed");
 
@@ -1160,8 +1145,8 @@ mod tests {
         let mut cfg = sample_config();
         cfg.max_http_timeout_ms = 100;
 
-        let liberdus = sample_liberdus();
-        let mut nodes = liberdus.active_nodelist.load_full().as_ref().clone();
+        let win = sample_win();
+        let mut nodes = win.active_nodelist.load_full().as_ref().clone();
         nodes.push(Consensor {
             foundationNode: Some(false),
             id: "fast".into(),
@@ -1170,20 +1155,18 @@ mod tests {
             publicKey: String::new(),
             rng_bias: Some(1.0),
         });
-        liberdus.active_nodelist.store(Arc::new(nodes));
-        liberdus
-            .load_distribution_commulative_bias
+        win.active_nodelist.store(Arc::new(nodes));
+        win.load_distribution_commulative_bias
             .write()
             .await
             .push(1.0);
-        liberdus
-            .list_prepared
+        win.list_prepared
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
         let request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec();
         let (mut client, mut peer) = tokio::io::duplex(1024);
 
-        let err = handle_request(request, &mut client, Arc::new(liberdus), Arc::new(cfg))
+        let err = handle_request(request, &mut client, Arc::new(win), Arc::new(cfg))
             .await
             .expect_err("connection should fail");
         let err_text = format!("{}", err);
@@ -1205,8 +1188,8 @@ mod tests {
 
     #[tokio::test]
     async fn get_next_round_robins_then_bias() {
-        let liberdus = sample_liberdus();
-        let mut nodes = liberdus.active_nodelist.load_full().as_ref().clone();
+        let win = sample_win();
+        let mut nodes = win.active_nodelist.load_full().as_ref().clone();
         nodes.push(Consensor {
             foundationNode: Some(false),
             id: "one".into(),
@@ -1223,23 +1206,21 @@ mod tests {
             publicKey: "pk2".into(),
             rng_bias: None,
         });
-        liberdus.active_nodelist.store(Arc::new(nodes));
+        win.active_nodelist.store(Arc::new(nodes));
 
         {
-            let mut trips = liberdus.trip_ms.write().await;
+            let mut trips = win.trip_ms.write().await;
             trips.insert("one".into(), 50);
             trips.insert("two".into(), 10);
         }
 
-        let first = liberdus.get_next_appropriate_consensor().await.unwrap();
-        let second = liberdus.get_next_appropriate_consensor().await.unwrap();
+        let first = win.get_next_appropriate_consensor().await.unwrap();
+        let second = win.get_next_appropriate_consensor().await.unwrap();
         assert_eq!(first.0, 0);
         assert_eq!(second.0, 1);
 
-        let _ = liberdus.get_next_appropriate_consensor().await.unwrap();
-        assert!(liberdus
-            .list_prepared
-            .load(std::sync::atomic::Ordering::Relaxed));
+        let _ = win.get_next_appropriate_consensor().await.unwrap();
+        assert!(win.list_prepared.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     #[tokio::test]
@@ -1255,8 +1236,8 @@ mod tests {
         ))
         .await;
 
-        let liberdus = sample_liberdus();
-        let mut nodes = liberdus.active_nodelist.load_full().as_ref().clone();
+        let win = sample_win();
+        let mut nodes = win.active_nodelist.load_full().as_ref().clone();
         nodes.push(Consensor {
             foundationNode: Some(false),
             id: "fast".into(),
@@ -1265,19 +1246,17 @@ mod tests {
             publicKey: String::new(),
             rng_bias: Some(1.0),
         });
-        liberdus.active_nodelist.store(Arc::new(nodes));
-        liberdus
-            .load_distribution_commulative_bias
+        win.active_nodelist.store(Arc::new(nodes));
+        win.load_distribution_commulative_bias
             .write()
             .await
             .push(1.0);
-        liberdus
-            .list_prepared
+        win.list_prepared
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
         let request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec();
 
-        let response = liberdus.send(request).await.expect("send should succeed");
+        let response = win.send(request).await.expect("send should succeed");
         let response_str = std::str::from_utf8(&response).unwrap();
         assert!(response_str.contains("ok"));
 
@@ -1311,7 +1290,7 @@ mod tests {
 pub async fn handle_request<S>(
     request_buffer: Vec<u8>,
     client_stream: &mut S,
-    liberdus: Arc<Liberdus>,
+    win: Arc<WinCoin>,
     config: Arc<config::Config>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -1319,7 +1298,7 @@ where
 {
     let mut retry = 0;
     let mut response_data = loop {
-        match liberdus.send(request_buffer.clone()).await {
+        match win.send(request_buffer.clone()).await {
             Ok(response) => break response,
             Err(e) => {
                 if retry < 2 {
@@ -1327,7 +1306,7 @@ where
                     sleep(Duration::from_millis(500)).await;
                     continue;
                 }
-                eprintln!("Error sending request through liberdus: {}", e);
+                eprintln!("Error sending request through win: {}", e);
                 let error_str = e.to_string();
                 println!("{}", error_str);
                 if error_str.contains("Timeout")

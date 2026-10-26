@@ -1,6 +1,6 @@
 {
     "http_port": 3030,
-    "archiver_seed_path": "./src/archiver_seed.json",
+    "archiver_seed_path": "archiver_seed.json",
     "nodelist_refresh_interval_sec": 59,
     "max_http_timeout_ms": 4000,
     "crypto_seed": "69fa4195670576c0160d660c3be36556ff8d504725be8a59b5a96509e0c994bc",
@@ -8,12 +8,12 @@
     "tcp_keepalive_time_sec": 5,
     "tls": {
         "enabled": false,
-        "cert_path": "/home/kmt/opt/liberdus/ca.crt",
-        "key_path": "/home/kmt/opt/liberdus/ca.key"
+        "cert_path": "../certs/win-proxy.crt",
+        "key_path": "../certs/win-proxy.key"
     },
     "standalone_network": {
-        "enabled":  true,
-        "replacement_ip": "69.197.162.234"
+        "enabled": false,
+        "replacement_ip": "127.0.0.1"
     },
     "node_filtering": {
         "enabled": true,
@@ -23,25 +23,19 @@
     },
     "shardus_monitor": {
         "enabled": true,
-        "upstream_ip": "69.197.162.234",
+        "upstream_ip": "127.0.0.1",
         "upstream_port": 3000,
         "https": false
     },
     "local_source": {
-        "collector_api_ip":"69.197.162.234",
-        "collector_api_port":6101,
-        "collector_event_server_ip":"69.197.162.234",
-        "collector_event_server_port":4444
+        "collector_api_ip": "127.0.0.1",
+        "collector_api_port": 6101,
+        "collector_event_server_ip": "127.0.0.1",
+        "collector_event_server_port": 4444
     },
     "notifier": {
         "ip": "127.0.0.1",
         "port": 4701
     },
-    "observer_urls": [
-        "http://127.0.0.1:8101",
-        "http://127.0.0.1:8102",
-        "http://127.0.0.1:8103",
-        "http://127.0.0.1:8104",
-        "http://127.0.0.1:8105"
-    ]
+    "observer_urls": []
 }
